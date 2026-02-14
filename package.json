@@ -29,7 +29,7 @@
 		"test": "npm run lint"
 	},
 	"dependencies": {
-		"cloudflare": "^2.9.1"
+		"cloudflare": "^3.5.0"
 	},
 	"devDependencies": {
 		"@nodecraft/eslint-config": "^43.1.0",
@@ -40,6 +40,6 @@
 		"eslint-plugin-unicorn": "^55.0.0"
 	},
 	"engines": {
-		"node": ">=16"
+		"node": ">=14.13.1"
 	}
 }

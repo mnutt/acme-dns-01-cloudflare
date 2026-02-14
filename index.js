@@ -8,39 +8,26 @@ const resolveTxtPromise = promisify(dns.resolveTxt);
 const cloudflare = require('cloudflare');
 
 function formatCloudflareError(err) {
-	if (!err.response || !err.response.body) {
+	if (!err) {
 		return err;
 	}
-	// maintain Cloudflare API errors, not just a generic HTTPError from `got`
+
+	// maintain Cloudflare API errors, not just a generic SDK error
 	const newErr = err;
-	newErr.cloudflare_errors = err.response.body.errors;
-	return newErr;
-}
-
-/* Thanks to https://github.com/buschtoens/le-challenge-cloudflare for this great pagination implementation */
-async function *consumePages(loader, pageSize = 10) {
-	for (let page = 1, didReadAll = false; !didReadAll; page++) {
-		let response;
-		try {
-			response = await loader({
-				per_page: pageSize,
-				page,
-			});
-		} catch (err) {
-			// try to pass-through human-friendly Cloudflare API errors
-			throw formatCloudflareError(err);
-		}
-
-		if (response.success) {
-			yield* response.result;
-		} else {
-			const error = new Error('Cloudflare API error.');
-			error.response = response;
-			throw formatCloudflareError(error);
-		}
-
-		didReadAll = page >= response.result_info.total_pages;
+	if (Array.isArray(err.errors)) {
+		newErr.cloudflare_errors = err.errors;
+		return newErr;
 	}
+	if (err.error && Array.isArray(err.error.errors)) {
+		newErr.cloudflare_errors = err.error.errors;
+		return newErr;
+	}
+	// backwards-compatible fallback for old SDK error shape
+	if (err.response && err.response.body && Array.isArray(err.response.body.errors)) {
+		newErr.cloudflare_errors = err.response.body.errors;
+		return newErr;
+	}
+	return newErr;
 }
 
 async function resolveTxt(fqdn) {
@@ -61,9 +48,9 @@ class Challenge {
 		this.module = 'acme-dns-01-cloudflare';
 		this.options = options;
 		this.cfClient = new cloudflare({
-			email: options.client && options.client.email || options.email,
-			key: options.client && options.client.key || options.key,
-			token: options.client && options.client.token || options.token,
+			apiEmail: options.client && options.client.email || options.email,
+			apiKey: options.client && options.client.key || options.key,
+			apiToken: options.client && options.client.token || options.token,
 		});
 		this.client = {
 			email: options.client && options.client.email || options.email,
@@ -96,7 +83,8 @@ class Challenge {
 				throw new Error(`Could not find a zone for '${fullRecordName}'.`);
 			}
 			// add record
-			await this.cfClient.dnsRecords.add(zone.id, {
+			await this.cfClient.dns.records.create({
+				zone_id: zone.id,
 				type: 'TXT',
 				name: fullRecordName,
 				content: args.challenge.dnsAuthorization,
@@ -133,7 +121,9 @@ class Challenge {
 			}
 			for (const record of records) {
 				if (record.name === fullRecordName && record.content === args.challenge.dnsAuthorization) {
-					await this.cfClient.dnsRecords.del(zone.id, record.id);
+					await this.cfClient.dns.records.delete(record.id, {
+						zone_id: zone.id,
+					});
 				}
 			}
 			if (this.options.verifyPropagation) {
@@ -188,7 +178,7 @@ class Challenge {
 	async zones(args) { // eslint-disable-line no-unused-vars
 		try {
 			const zones = [];
-			for await (const zone of consumePages(pagination => this.cfClient.zones.browse(pagination))) {
+			for await (const zone of this.cfClient.zones.list()) {
 				zones.push(zone.name);
 			}
 			return zones;
@@ -230,7 +220,7 @@ class Challenge {
 	}
 
 	async getZoneForDomain(domain) {
-		for await (const zone of consumePages(pagination => this.cfClient.zones.browse(pagination))) {
+		for await (const zone of this.cfClient.zones.list()) {
 			if (domain === zone.name || domain.endsWith(`.${zone.name}`)) {
 				return zone;
 			}
@@ -241,11 +231,11 @@ class Challenge {
 	async getTxtRecords(zone, name) {
 		const records = [];
 
-		for await (const txtRecord of consumePages(pagination => this.cfClient.dnsRecords.browse(zone.id, {
-			...pagination,
+		for await (const txtRecord of this.cfClient.dns.records.list({
+			zone_id: zone.id,
 			type: 'TXT',
 			name,
-		}))) {
+		})) {
 			if (txtRecord.name === name) {
 				records.push(txtRecord);
 			}
